@@ -1,0 +1,61 @@
+
+- hosts: "all"
+  become: True
+  vars_files: privvars.yml 
+   
+  tasks:
+  #Curl install
+  - name: "Update apt"
+    ansible.builtin.apt: update_cache=yes force_apt_get=yes cache_valid_time=3600  
+  - name: "Curl and repo requirements install"
+    ansible.builtin.apt:
+                    pkg: ca-certificates, gnupg, lsb-release, curl
+  #UFW things
+  - name: "Enable ufw"
+    ufw: state=enabled policy=allow
+  - name: "Allow tcp 80,8080 and 1834 ports"
+    ufw: rule=allow port=80,8080,1834 proto=tcp
+  #SSH things
+  - name: "Change ssh port to 1834"
+    ansible.builtin.lineinfile: dest=/etc/ssh/sshd_config regexp='^#?Port' line='Port 1834'
+  - name: "Allow pubkey authentication"
+    ansible.builtin.lineinfile: dest=/etc/ssh/sshd_config regexp='^#?PubkeyAuthentication' line='PubkeyAuthentication yes' 
+  - name: "Adding users from file"
+    user: name={{item[0]}} password={{item[1] | password_hash('sha512')}}    
+    loop: "{{(skillcloud['users'] | zip(skillcloud['passwords'])) | list}}"
+  - name: "Adding ssh pubkey to added users"
+    authorized_key: user={{item}} key={{skillcloud['publickey']}} state=present validate_certs=False
+    loop: "{{skillcloud['users'] | list}}"
+  #Copy files and install docker and docker compose   
+  - name: "Copy files from tocopy/ to /skillcloud-nginx on remote"
+    copy:
+     src: tocopy/
+     dest: /skillcloud-nginx/  
+  - name: "Docker curl and bash"
+    shell: 'curl -fsSL https://get.docker.com -o get-docker.sh && sh get-docker.sh'
+    args:
+     warn: false
+  - name: "Update apt"
+    ansible.builtin.apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+  - name: "Docker reqs"
+    ansible.builtin.apt:
+                    pkg: docker-ce, docker-ce-cli, containerd.io 
+  - name: "Docker install compose"
+    shell: 'bash /skillcloud-nginx/docker-compose.sh'                   
+  #Build some shit and start compose 
+  - name: "Build site" 
+    shell: 'cd /skillcloud-nginx && docker build -t "site:site" -f /skillcloud-nginx/Dockerfile-site .'
+  - name: "Build balance"
+    shell: 'cd /skillcloud-nginx && docker build -t "balance:balance" -f /skillcloud-nginx/Dockerfile-balance .'
+  - name: "Build compose"
+    shell: 'cd /skillcloud-nginx && docker-compose build'
+  - name: "Start compose"
+    shell: 'cd /skillcloud-nginx && docker-compose up -d'
+  #Reboot services and pc
+  - name: "Restart UFW"
+    service: name=ufw state=restarted
+  - name: "Restart SSHD"
+    service: name=sshd state=restarted
+  - name: "Reboot"
+    shell: 'sudo reboot'  
+ 
